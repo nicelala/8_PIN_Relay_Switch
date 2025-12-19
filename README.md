@@ -89,4 +89,3 @@ pip install PyQt5
 
 # 啟動 GUI（請依你的路徑調整）
 python src/gui_main.py
-``
