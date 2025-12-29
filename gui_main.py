@@ -26,6 +26,9 @@ from dmm import DmmClient
 from logger import Logger
 import meas_runner  # 你改名的 runner 檔案，內含 MeasurementRunner
 
+import configparser
+from input_dialog import InputDialog
+
 COL_PIN, COL_VAL, COL_LOW, COL_UP, COL_RES = range(5)
 INI_PATH = os.path.join(os.path.abspath('.'), 'settings.ini')
 
@@ -35,7 +38,6 @@ VAL_WIDTH = 90
 LOW_WIDTH = 60
 UP_WIDTH = 60
 RES_WIDTH = 80
-
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
@@ -146,7 +148,68 @@ class MainWindow(QtWidgets.QMainWindow):
         # 首次顯示後計算 Pin 欄寬（避免尚未佈局時 viewport 寬度不準）
         QtCore.QTimer.singleShot(0, self.update_pin_column_width)
 
+        # 顯示 OPID/MO/PN（只讀、不可編輯）
+        self.opid_edit = QtWidgets.QLineEdit()
+        self.opid_edit.setReadOnly(True)
+        self.mo_edit = QtWidgets.QLineEdit()
+        self.mo_edit.setReadOnly(True)
+        self.pn_edit = QtWidgets.QLineEdit()
+        self.pn_edit.setReadOnly(True)
+        
+        form.addRow('OPID', self.opid_edit)
+        form.addRow('MO', self.mo_edit)
+        form.addRow('PN', self.pn_edit)
+        
+        # 狀態旗標：是否已通過輸入檢核
+        self._operator_valid = False
+        
+        # 從 INI 預載（若有就顯示並視為已通過）
+        preset = self.load_operator_from_ini()
+        if preset.get("OPID") and preset.get("MO") and preset.get("PN"):
+            self.opid_edit.setText(preset["OPID"])
+            self.mo_edit.setText(preset["MO"])
+            self.pn_edit.setText(preset["PN"])
+            self._operator_valid = True
+
     # ---------- INI 讀取 ----------
+    
+    def load_operator_from_ini(self):
+        """讀取 [Operator] 的 OPID/MO/PN；若不存在，回傳空字串。"""
+        cfg = configparser.ConfigParser()
+        op = {"OPID": "", "MO": "", "PN": ""}
+        try:
+            if os.path.exists(INI_PATH):
+                cfg.read(INI_PATH, encoding='utf-8')
+                if 'Operator' in cfg:
+                    op['OPID'] = cfg['Operator'].get('OPID', '').strip()
+                    op['MO'] = cfg['Operator'].get('MO', '').strip()
+                    op['PN'] = cfg['Operator'].get('PN', '').strip()
+        except Exception as ex:
+            logging.error("讀取 settings.ini [Operator] 失敗：%s", ex)
+        return op
+
+    def save_operator_to_ini(self, op_dict):
+        """將 OPID/MO/PN 寫回 [Operator]；若節不存在則建立。"""
+        cfg = configparser.ConfigParser()
+        try:
+            if os.path.exists(INI_PATH):
+                cfg.read(INI_PATH, encoding='utf-8')
+            if 'Operator' not in cfg:
+                cfg.add_section('Operator')
+            cfg['Operator']['OPID'] = op_dict.get('OPID', '')
+            cfg['Operator']['MO'] = op_dict.get('MO', '')
+            cfg['Operator']['PN'] = op_dict.get('PN', '')
+            # 額外：Profile.s_Input_Form_En 對應的開關（有需要可用）
+            if 'Config' not in cfg:
+                cfg.add_section('Config')
+            if 'Input_Form_En' not in cfg['Config']:
+                cfg['Config']['Input_Form_En'] = '1'
+            with open(INI_PATH, 'w', encoding='utf-8') as f:
+                cfg.write(f)
+            logging.info("已寫入 [Operator] 至 settings.ini：%s", op_dict)
+        except Exception as ex:
+            logging.error("寫入 settings.ini [Operator] 失敗：%s", ex)
+
     def load_pin_names(self) -> List[str]:
         """從 settings.ini 讀取 [Pins] 的 Y0..Y7 名稱。若缺失則回傳空字串陣列。"""
         names = [''] * 8
@@ -221,6 +284,10 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------- 新增：Start 事件（量測主流程） ----------
     @QtCore.pyqtSlot()
     def on_start(self) -> None:
+        
+        if not self.ensure_operator_ready():
+            return  # 阻止執行量測流程
+
         self.start_btn.setEnabled(False)
         self.status_lbl.setText('掃描中...')
         simulate = self.simulate_chk.isChecked()
@@ -243,6 +310,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         limits = self.limits_from_table()
         logger = Logger()
+        
+        logger.pin_names = getattr(self, "pin_names", [])[:] if hasattr(self, "pin_names") else []
+        logger.meta = {
+            "OPID": self.opid_edit.text().strip(),
+            "MO": self.mo_edit.text().strip(),
+            "PN": self.pn_edit.text().strip(),
+        }
+
         logger.pin_names = self.pin_names[:]   # 傳入 INI 讀到的名稱
         try:
             rng = float(self.range_edit.text().strip())
@@ -317,7 +392,49 @@ class MainWindow(QtWidgets.QMainWindow):
         super().showEvent(e)
         # 顯示後再計算一次，確保佈局完成
         QtCore.QTimer.singleShot(0, self.update_pin_column_width)
-
+    
+    # --- 確保 Start 前已通過對話框 ---
+    def ensure_operator_ready(self) -> bool:
+        """若尚未通過，彈出 InputDialog；通過返回 True，否則 False。"""
+        if self._operator_valid:
+            return True
+        preset = {
+            "OPID": self.opid_edit.text().strip(),
+            "MO": self.mo_edit.text().strip(),
+            "PN": self.pn_edit.text().strip(),
+        }
+        dlg = InputDialog(self, preset=preset)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            values = dlg.get_values()
+            # 回填畫面、鎖定（只讀）
+            self.opid_edit.setText(values["OPID"])
+            self.mo_edit.setText(values["MO"])
+            self.pn_edit.setText(values["PN"])
+            self.opid_edit.setReadOnly(True)
+            self.mo_edit.setReadOnly(True)
+            self.pn_edit.setReadOnly(True)
+            # 寫入 INI
+            self.save_operator_to_ini(values)
+            self._operator_valid = True
+            return True
+        else:
+            # 使用者取消或不合法
+            QtWidgets.QMessageBox.warning(self, "警告", "未完成 OPID/MO/PN 輸入，無法開始測試。")
+            return False
+        
+    # --- 在 MainWindow 類別內加入 showEvent（可選） ---
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            cfg = configparser.ConfigParser()
+            if os.path.exists(INI_PATH):
+                cfg.read(INI_PATH, encoding='utf-8')
+                if cfg.get('Config', 'Input_Form_En', fallback='1') == '1':
+                    # 僅在尚未通過時彈出
+                    if not self._operator_valid:
+                        self.ensure_operator_ready()
+        except Exception as ex:
+            logging.error("showEvent 檢查 Input_Form_En 失敗：%s", ex)
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)

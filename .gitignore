@@ -1,0 +1,49 @@
+# ---- Python (官方模板精選) ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分發/打包
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# 單元測試 / 覆蓋率
+.coverage
+.cache/
+pytestcache/
+nosetests.xml
+coverage.xml
+htmlcov/
+
+# 虛擬環境
+.env
+.venv/
+venv/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 文件 / 產物
+*.log
+*.tmp
+
+# ---- GUI/打包擴充 ----
+# PyInstaller 產生的規格檔與暫存
+*.spec
+# Windows 執行檔
+*.exe
+
+# 常見資產/暫存
+assets/*.bak
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# 作業系統
+.DS_Store
+Thumbs.db
